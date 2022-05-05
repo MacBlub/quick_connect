@@ -1,0 +1,293 @@
+#!/usr/bin/env bash
+
+set -e
+
+HELP="quick_connect\n
+    usage: quick_connect [--list] [--profile]
+    --list : list all registered connections
+    --connect <profile_name>: connect to device under <profile_name>\n
+    --register : register profile for future connection\n
+    --help : Print this message\n
+    -------------------------------------------\n
+    Profiles are stored under the location of this script, and are folders, which contain files with id_rsa (private-key), info.conf\n
+    Example info.conf:
+        username=user_a
+        server=255.255.255.255
+        identity=identity_filename\n"
+
+# setup program if run for first time
+SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+history_file_cmd="${SCRIPT_DIR}/.cmd_history"
+history_file_pth="${SCRIPT_DIR}/.pth_history"
+touch "${history_file_cmd}"
+touch "${history_file_pth}"
+history -r "${history_file_cmd}"
+mkdir -p profiles
+
+# Setup Helper functions
+COLOR_STD="\033[0m"
+COLOR_INFO="\033[0;37m"
+COLOR_WARN="\033[0;33m"
+COLOR_HIGH="\033[0;93m"
+COLOR_ERR="\033[0;31m"
+
+info () { echo -e "${COLOR_INFO}$1${COLOR_STD}\c"; }
+warn () { echo -e "${COLOR_WARN}$1${COLOR_STD}\c"; }
+err () { echo -e "${COLOR_ERR}$1${COLOR_STD}\c"; }
+highlight () { echo -e "${COLOR_HIGH}$1${COLOR_STD}\c"; }
+
+fancy_read () { read -e -p "$(echo -e ${COLOR_INFO}${1}${COLOR_HIGH}${2}${COLOR_INFO}${3}${COLOR_STD})" result ; }
+
+find_dir () { 
+    history -w "${history_file_cmd}"
+    history -r "${history_file_pth}"
+    echo -e "${COLOR_INFO}${1}${COLOR_HIGH}${2}${COLOR_INFO}${3}${COLOR_STD}"
+    options="ls - list directories\ncd - change dir"
+    echo -e "${COLOR_INFO}$options${COLOR_STD}"
+    prev_path="$(pwd)"
+    while [[ true ]] ; do
+        cur_path="$(pwd)"
+        read -e -p "${cur_path}> " answer
+        if [ "${answer:0:3}" = "cd " ] ; then
+            set +e
+            cd "${answer:3}"
+            set -e
+            continue;
+        elif [ "${answer:0:2}" = "ls" ] ; then
+            set +e
+            echo $(ls)
+            set -e
+            continue;
+        fi
+        
+        clean_answer=$(echo $answer | sed 's:/*$::')
+        pot_path="${cur_path}/${clean_answer}"
+        if [[ -d "${pot_path}" ]] ; then
+            cur_path="${pot_path}"
+            cd "$cur_path"
+        elif [[ -f  "${pot_path}" ]] ; then
+            cur_path="${pot_path}"
+            cd "$prev_path"
+            break;
+        fi
+    done
+    result="${cur_path}"
+    history -r "${history_file_cmd}"
+}
+
+# Actual functions
+get_value () {
+    infofile="${SCRIPT_DIR}/profiles/${profilename}/info.conf"
+    if [[ -f "${infofile}" ]] ; then
+        set +e
+        extract0=$(grep "$1" "${infofile}")
+        extract1=$(grep "$1" "${infofile}" | sed -e 's/'"$1"'[[:space:]]*=[[:space:]]*\(.*\)[[:space:]]*$/\1/g')
+        set -e
+        if [ "$extract0" = "$extract1" ] ; then
+            result=""
+        else
+            result="${extract1}"
+        fi
+    else
+        result=""
+    fi
+}
+
+quick_connect0 () {
+    SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+    
+    profilename="$1"
+    profile="${SCRIPT_DIR}/profiles/${profilename}"
+    if [ -d "$profile" ] ; then
+        get_value "username"
+        username="$result"
+        
+        get_value "address"
+        server="$result"
+        
+        get_value "keyfile"
+        identity="$result"
+        
+        info "Connecting to ${1}...\n"
+        CMD="ssh -i ${identity}  ${username}@${server}"
+        info "${CMD}\n"
+        ${CMD}
+    else
+        err "Profile \"$1\" is not known!\n"   
+    fi
+}
+
+list_connections0 () {
+    SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+    
+    header_set=false
+    profiles=(${SCRIPT_DIR}/profiles/*)
+    for f in ${profiles[@]} ; do
+        if [[ -d "${f}" ]] ; then
+            if [ ${header_set} = false ]; then
+                info "Available connections:\n"
+                header_set=true
+            fi
+            info "${f}\n" 
+        fi
+    done
+    
+    # Case nothing was found
+    if [ ${header_set} = false ]; then
+        info "No connections registered!\n"
+    fi
+
+}
+
+register_connections0 () {
+    SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
+#    
+    confirm () {
+        result=""
+        msg="${1}"
+        while [ true ] ; do
+            fancy_read "${1}" "${2}" "${3}"
+            answer=${result}
+            if  [ "${answer}" = "n" ] || \
+                [ "${answer}" = "N" ] ; then
+                result="false"
+                return;
+            elif [ "${answer}" = "y" ] || \
+                 [ "${answer}" = "Y" ] ; then
+                result="true"
+                return;
+            fi    
+        done
+    }
+    
+    request_value () {
+        key="$1"
+        if [ "${key}" == "username" ] ; then
+            fancy_read "Please enter your " "username" ": "
+        elif [ "${key}" == "address" ] ; then
+            fancy_read "Please enter the " "server address" ": "
+        elif [ "${key}" == "keyfile" ] ; then
+            find_dir "Please enter the location of the " "private key" ": "
+        else
+            err "Unknown paramter requested! "
+        fi
+        history -s "${result}"
+    }
+
+    check_overwrite () {
+        confirm "Do you want to change parameter " "$1" "? (y/n) "
+    }
+    
+    # Setup profile
+    fancy_read "Please enter your " "profilename" ": "
+    profilename=${result}
+    history -s "${profilename}"
+
+    profile="${SCRIPT_DIR}/profiles/${profilename}"
+    if [[ -d "${profile}" ]] ; then
+        profile_exist=true
+        warn "Profile exists!\n"
+        confirm "Do you want to overwrite the profile? (y/n) "
+        answer="${result}"
+        if [ "${answer}" = true ] ; then
+            info "\rContinuing...\n"
+        else
+            warn "\rUser aborted registration\n"
+            return;
+        fi
+    else
+        profile_exist=false
+        mkdir -p "${profile}"
+    fi
+    
+    # Set information
+    keys=("username" "address" "keyfile")
+    values=()
+    for key in "${keys[@]}" ; do
+        # Read infofile if exist
+
+        get_value "$key"
+        value="${result}"
+
+        overwrite="false"
+        if [ "${value}" != "" ] ; then
+            check_overwrite "$key"
+            overwrite="$result"
+        fi
+            
+        if [ "$value" == "" ] ||
+           [ "$overwrite" == "true" ] ; then
+            request_value "$key"
+            values+=("${result}")
+        else
+            values+=("$value")
+        fi
+    done
+    
+    # Move keylocation
+    loc_keyfile="${SCRIPT_DIR}/profiles/${profilename}/rsa_key"
+    if [ "${values[2]}" != "$loc_keyfile" ] ; then
+        mv "${values[2]}" "$loc_keyfile"
+        chmod 600 "$loc_keyfile"
+        values[2]="$loc_keyfile"
+    fi
+
+    # Write to info file
+    echo "" > ${infofile}
+    for i in "${!keys[@]}"; do 
+        echo "${keys[$i]}=${values[$i]}" >> ${infofile}
+    done
+}
+
+
+# parse Arguments
+REQUEST="Invalid"
+POSITIONAL_ARGS=()
+
+while [[ $# -gt 0 ]]; do
+  case $1 in
+    -c|--connect)
+      REQUEST="connect"
+      PROFILE="$2"
+      shift # past argument
+      shift # past value
+      ;;
+    -l|--list)
+      REQUEST="list"
+      shift # past argument
+      ;;
+    -r|--register)
+      REQUEST="register"
+      shift # past argument
+      ;;
+    -h|--help)
+      REQUEST="help"
+      shift # past argument
+      ;;
+    -*|--*)
+      err "Unknown option $1"
+      exit 1
+      ;;
+    *)
+      POSITIONAL_ARGS+=("$1") # save positional arg
+      shift # past argument
+      ;;
+  esac
+done
+
+set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
+
+if [ "${REQUEST}" = "connect" ]; then
+    quick_connect0 "$PROFILE"
+elif [ "${REQUEST}" = "list" ]; then
+    list_connections0
+elif [ "${REQUEST}" = "register" ]; then
+    register_connections0
+elif [ "${REQUEST}" = "help" ]; then
+    info "\n${HELP}"
+else
+    err "Error: No Request provided! Abort!\n"
+    info "\n${HELP}"
+fi
+
+history -w "${history_file_cmd}"

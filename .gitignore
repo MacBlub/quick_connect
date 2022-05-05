@@ -1,0 +1,4 @@
+profiles
+profiles/*
+.pth_history
+.cmd_history
