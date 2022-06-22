@@ -22,14 +22,14 @@ history_file_pth="${SCRIPT_DIR}/.pth_history"
 touch "${history_file_cmd}"
 touch "${history_file_pth}"
 history -r "${history_file_cmd}"
-mkdir -p profiles
+mkdir -p "${SCRIPT_DIR}/profiles"
 
 # Setup Helper functions
-COLOR_STD="\033[0m"
-COLOR_INFO="\033[0;37m"
-COLOR_WARN="\033[0;33m"
-COLOR_HIGH="\033[0;93m"
-COLOR_ERR="\033[0;31m"
+COLOR_STD=$'\033[0m'
+COLOR_INFO=$'\033[0;37m'
+COLOR_WARN=$'\033[0;33m'
+COLOR_HIGH=$'\033[0;93m'
+COLOR_ERR=$'\033[0;31m'
 
 info () { echo -e "${COLOR_INFO}$1${COLOR_STD}\c"; }
 warn () { echo -e "${COLOR_WARN}$1${COLOR_STD}\c"; }
@@ -96,7 +96,7 @@ get_value () {
 quick_connect0 () {
     SCRIPT_DIR=$( cd -- "$( dirname -- "${BASH_SOURCE[0]}" )" &> /dev/null && pwd )
     
-    profilename="$1"
+    profilename="${1,,}"
     profile="${SCRIPT_DIR}/profiles/${profilename}"
     if [ -d "$profile" ] ; then
         get_value "username"
@@ -108,8 +108,11 @@ quick_connect0 () {
         get_value "keyfile"
         identity="$result"
         
+        get_value "port"
+        port="$result"
+        
         info "Connecting to ${1}...\n"
-        CMD="ssh -i ${identity}  ${username}@${server}"
+        CMD="ssh -i ${identity} -p ${port} ${username}@${server}"
         info "${CMD}\n"
         ${CMD}
     else
@@ -166,10 +169,12 @@ register_connections0 () {
             fancy_read "Please enter your " "username" ": "
         elif [ "${key}" == "address" ] ; then
             fancy_read "Please enter the " "server address" ": "
+        elif [ "${key}" == "port" ] ; then
+            fancy_read "Please enter the " "port" ": "
         elif [ "${key}" == "keyfile" ] ; then
             find_dir "Please enter the location of the " "private key" ": "
         else
-            err "Unknown paramter requested! "
+            err "Unknown parameter requested! "
         fi
         history -s "${result}"
     }
@@ -178,9 +183,82 @@ register_connections0 () {
         confirm "Do you want to change parameter " "$1" "? (y/n) "
     }
     
+    find_index () {
+        local -n arr=$1
+        local val="$2"
+        result="-1"
+        for i in "${!arr[@]}"; do
+            if [[ "${arr[$i]}" = "${val}" ]]; then
+                result="${i}";
+            fi
+        done
+    }
+
+    verify_and_update () {
+        local -n private_all_keys=$1
+        local -n private_all_values=$2
+        local answer=""
+        
+        # Print current state of infos
+        info "Connection Setting:\n"
+        for i in "${!private_all_keys[@]}"; do 
+            printf "%-20b : " "${COLOR_INFO}${private_all_keys[$i]}${COLOR_STD}"
+            printf "%-30b\n" "${COLOR_INFO}${private_all_values[$i]}${COLOR_STD}"
+        done
+        highlight "If this Connection Setting is correct, please type 'accept', else 'edit'.\n"
+        highlight "Type command (e.g. accept, help)\n"
+
+        while [[ "accept" != "${answer}" ]] ;
+        do  
+            fancy_read "" "" "> "
+            history -s "${result}"
+            answer=(${result})
+
+            description=("Prints this help message" \
+                         "Print Current Setting" \
+                         "Accept the current Connect Setting" \
+                         "Edit a specific key-value pair 'edit my_key' or 'edit my_key my_value' works.")
+            commands=("help" "list" "accept" "edit <key> [value]")
+            if [[ "help" == "${answer}" ]]; then
+                for i in "${!commands[@]}"; do
+                    printf "%-30b : " "${COLOR_WARN}${commands[$i]}${COLOR_STD}"
+                    printf "%-30b\n" "${COLOR_WARN}${description[$i]}${COLOR_STD}"
+                done
+            elif [[ "accept" == "${answer}" ]]; then # just pass
+                true;
+            elif [[ "list" == "${answer}" ]]; then
+                # Print current state of infos
+                info "Connection Setting:\n"
+                for i in "${!private_all_keys[@]}"; do 
+                    printf "%-20b : " "${COLOR_INFO}${private_all_keys[$i]}${COLOR_STD}"
+                    printf "%-30b\n" "${COLOR_INFO}${private_all_values[$i]}${COLOR_STD}"
+                done
+            elif [[ "edit" == "${answer}" ]]; then
+                # Find index
+                find_index private_all_keys "${answer[1]}"
+                if [[ "${result}" == -1 ]] ; then
+                    warn "Key ${answer[1]} does not exist! Ignore.\n"
+                    continue;
+                fi
+                idx="${result}"
+                
+                if [[ "${answer[2]}" == "" ]] ; 
+                then
+                    request_value "${answer[1]}"
+                    private_all_values[$idx]="${result}"
+                else
+                    private_all_values[$idx]="${answer[2]}"
+                fi
+            else 
+                warn "Command '${answer}' unknown. Ignore.\n"
+            fi
+        done
+    }
+
     # Setup profile
     fancy_read "Please enter your " "profilename" ": "
-    profilename=${result}
+    info "Note: This will be converted to lower-case!"
+    profilename=${result,,}
     history -s "${profilename}"
 
     profile="${SCRIPT_DIR}/profiles/${profilename}"
@@ -200,39 +278,35 @@ register_connections0 () {
         mkdir -p "${profile}"
     fi
     
-    # Set information
-    keys=("username" "address" "keyfile")
-    values=()
-    for key in "${keys[@]}" ; do
-        # Read infofile if exist
+    # Create List with full (parametrization), 
+    # not only the minimum required ones
+    keys=("username" "address" "keyfile" "port")
+    values=("" "" "" "22")
+   
+    # If info exists, load current setting
+    if [ "$profile_exist" = true ];
+    then
+        for i in ${!keys[@]}; do
+            get_value "${keys[$i]}"
+            if [[ "${result}" != "" ]]; then
+                values["$i"]="${result}"
+            fi
+        done
+    fi
 
-        get_value "$key"
-        value="${result}"
+    # Verify that everything is ok to user?
+    verify_and_update keys values
 
-        overwrite="false"
-        if [ "${value}" != "" ] ; then
-            check_overwrite "$key"
-            overwrite="$result"
-        fi
-            
-        if [ "$value" == "" ] ||
-           [ "$overwrite" == "true" ] ; then
-            request_value "$key"
-            values+=("${result}")
-        else
-            values+=("$value")
-        fi
-    done
-    
     # Move keylocation
     loc_keyfile="${SCRIPT_DIR}/profiles/${profilename}/rsa_key"
     if [ "${values[2]}" != "$loc_keyfile" ] ; then
-        mv "${values[2]}" "$loc_keyfile"
+        cp "${values[2]}" "$loc_keyfile"
         chmod 600 "$loc_keyfile"
-        values[2]="$loc_keyfile"
+        all_values[2]="$loc_keyfile"
     fi
-
+       
     # Write to info file
+    infofile="${SCRIPT_DIR}/profiles/${profilename}/info.conf"
     echo "" > ${infofile}
     for i in "${!keys[@]}"; do 
         echo "${keys[$i]}=${values[$i]}" >> ${infofile}
@@ -274,6 +348,8 @@ while [[ $# -gt 0 ]]; do
       ;;
   esac
 done
+
+history -r "${history_file_cmd}"
 
 set -- "${POSITIONAL_ARGS[@]}" # restore positional parameters
 
